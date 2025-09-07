@@ -1,29 +1,47 @@
-﻿using System.Collections.ObjectModel;
-using System.ComponentModel;
-using System.Diagnostics;
+﻿using System;
+using System.Collections.ObjectModel;
+using System.IO;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Input;
-using System.Windows.Media;
+using System.Diagnostics;
+using System.ComponentModel;
+using System.Text.RegularExpressions;
 
 namespace Custom_Console_Style_Launcher
 {
     public partial class MainWindow : Window, INotifyPropertyChanged
     {
-        public ObservableCollection<Game> Games { get; set; }
-
+        private ObservableCollection<Game> _games;
         private Game _selectedGame;
+
+        public event PropertyChangedEventHandler PropertyChanged;
+
+        public ObservableCollection<Game> Games
+        {
+            get => _games;
+            set
+            {
+                _games = value;
+                OnPropertyChanged(nameof(Games));
+            }
+        }
+
         public Game SelectedGame
         {
             get => _selectedGame;
             set
             {
-                if (_selectedGame != value)
+                _selectedGame = value;
+                OnPropertyChanged(nameof(SelectedGame));
+
+                // Change video source when selected game changes
+                if (BackgroundVideo != null && _selectedGame != null)
                 {
-                    _selectedGame = value;
-                    OnPropertyChanged(nameof(SelectedGame));
-                    if (BackgroundVideo != null)
+                    // Convert relative paths to absolute URIs
+                    if (Uri.TryCreate(_selectedGame.VideoPath, UriKind.RelativeOrAbsolute, out Uri videoUri))
                     {
-                        BackgroundVideo.Source = new Uri(value.VideoPath, UriKind.RelativeOrAbsolute);
+                        BackgroundVideo.Source = videoUri;
                     }
                 }
             }
@@ -32,79 +50,68 @@ namespace Custom_Console_Style_Launcher
         public MainWindow()
         {
             InitializeComponent();
-
-            Games = new ObservableCollection<Game>
-            {
-                new Game
-                {
-                    Name = "Lies of P",
-                    Description = "Lies of P is a 2023 action role-playing game developed by Round8 Studio and published by Neowiz.",
-                    IconPath = "C:\\Users\\FafaThomas\\OneDrive\\Documents\\PS4 Launcher MetaData\\Lies of P\\Grid.jpg",
-                    ExecutablePath = "C:\\Program Files (x86)\\Steam\\steam.exe",
-                    VideoPath = "C:\\Users\\FafaThomas\\OneDrive\\Documents\\PS4 Launcher MetaData\\Lies of P\\Lies of P - Official Launch Trailer.mp4"
-                },
-                new Game
-                {
-                    Name = "Spider-Man 2",
-                    Description = "Spider-Man 2 is a 2023 action-adventure game developed by Insomniac Games and published by Sony Interactive Entertainment.",
-                    IconPath = "C:\\Users\\FafaThomas\\OneDrive\\Documents\\PS4 Launcher MetaData\\Marvel's Spider-Man 2\\Grid.png",
-                    ExecutablePath = "C:\\Program Files (x86)\\Steam\\steam.exe",
-                    VideoPath = "C:\\Users\\FafaThomas\\OneDrive\\Documents\\PS4 Launcher MetaData\\Marvel's Spider-Man 2\\Marvel's Spider-Man 2.mp4"
-                },
-                new Game
-                {
-                    Name = "God of War Ragnarok",
-                    Description = "God of War Ragnarök is a 2022 action-adventure game developed by Santa Monica Studio and published by Sony Interactive Entertainment.",
-                    IconPath = "Assets/gow_icon.jpg",
-                    ExecutablePath = "C:\\Program Files (x86)\\Steam\\steam.exe",
-                    VideoPath = "Assets/gow_video.mp4"
-                }
-            };
-
+            LoadGamesFromJson();
             this.DataContext = this;
 
+            // Select the first game by default
             if (Games.Count > 0)
             {
                 SelectedGame = Games[0];
             }
         }
 
-        private void LaunchGame(object sender, RoutedEventArgs e)
+        private void LoadGamesFromJson()
         {
-            if (SelectedGame != null)
+            string jsonFilePath = "games.json";
+            if (File.Exists(jsonFilePath))
             {
                 try
                 {
-                    Process.Start(new ProcessStartInfo
-                    {
-                        FileName = "cmd.exe",
-                        Arguments = $"/c start \"\" \"{SelectedGame.ExecutablePath}\"",
-                        UseShellExecute = true
-                    });
+                    string jsonString = File.ReadAllText(jsonFilePath);
+                    var gamesList = JsonSerializer.Deserialize<ObservableCollection<Game>>(jsonString);
+                    Games = gamesList ?? new ObservableCollection<Game>();
                 }
-                catch (Exception ex)
+                catch (JsonException ex)
                 {
-                    MessageBox.Show($"Could not launch the game: {ex.Message}", "Launch Error");
+                    // Handle JSON deserialization errors
+                    MessageBox.Show($"Error reading games.json: {ex.Message}");
+                    Games = new ObservableCollection<Game>();
+                }
+                catch (IOException ex)
+                {
+                    // Handle file I/O errors
+                    MessageBox.Show($"Error accessing games.json: {ex.Message}");
+                    Games = new ObservableCollection<Game>();
                 }
             }
+            else
+            {
+                MessageBox.Show("games.json not found. The application will start with no games.");
+                Games = new ObservableCollection<Game>();
+            }
+        }
+
+        private void OnPropertyChanged(string propertyName)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }
 
         private void Window_KeyDown(object sender, KeyEventArgs e)
         {
-            if (e.Key == Key.Right)
+            int currentIndex = Games.IndexOf(SelectedGame);
+
+            if (e.Key == Key.Left)
             {
-                var currentIndex = Games.IndexOf(SelectedGame);
-                if (currentIndex < Games.Count - 1)
-                {
-                    GamesListBox.SelectedIndex = currentIndex + 1;
-                }
-            }
-            else if (e.Key == Key.Left)
-            {
-                var currentIndex = Games.IndexOf(SelectedGame);
                 if (currentIndex > 0)
                 {
-                    GamesListBox.SelectedIndex = currentIndex - 1;
+                    SelectedGame = Games[currentIndex - 1];
+                }
+            }
+            else if (e.Key == Key.Right)
+            {
+                if (currentIndex < Games.Count - 1)
+                {
+                    SelectedGame = Games[currentIndex + 1];
                 }
             }
             else if (e.Key == Key.Enter)
@@ -113,25 +120,50 @@ namespace Custom_Console_Style_Launcher
             }
         }
 
-        private void GameIcon_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        private void LaunchGame(object sender, RoutedEventArgs e)
         {
-            var item = sender as FrameworkElement;
-            if (item != null && item.DataContext is Game game)
+            if (SelectedGame != null && !string.IsNullOrEmpty(SelectedGame.ExecutablePath))
             {
-                SelectedGame = game;
+                try
+                {
+                    Process.Start(new ProcessStartInfo(SelectedGame.ExecutablePath) { UseShellExecute = true });
+                }
+                catch (System.Exception ex)
+                {
+                    MessageBox.Show($"Error launching game: {ex.Message}");
+                }
             }
         }
 
-        private void BackgroundVideo_MediaEnded(object sender, RoutedEventArgs e)
+        private async void BackgroundVideo_MediaEnded(object sender, RoutedEventArgs e)
         {
-            BackgroundVideo.Position = new TimeSpan(0, 0, 1);
+            try
+            {
+                if (BackgroundVideo != null && SelectedGame != null)
+                {
+                    await Task.Delay(100);
+                    // Force a full reset by setting the source to null
+                    BackgroundVideo.Source = null;
+                    // Immediately re-assign the source to force a reload and restart
+                    if (Uri.TryCreate(SelectedGame.VideoPath, UriKind.RelativeOrAbsolute, out Uri videoUri))
+                    {
+                        BackgroundVideo.Source = videoUri;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Error re-playing video: {ex.Message}");
+            }
         }
 
-        public event PropertyChangedEventHandler PropertyChanged;
-
-        protected void OnPropertyChanged(string propertyName)
+        private void GameIcon_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
         {
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+            var selectedItem = (sender as FrameworkElement)?.DataContext as Game;
+            if (selectedItem != null)
+            {
+                SelectedGame = selectedItem;
+            }
         }
     }
 }
