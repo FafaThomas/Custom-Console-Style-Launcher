@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Diagnostics;
 using System.ComponentModel;
+using System.Threading.Tasks;
 using System.Text.RegularExpressions;
 
 namespace Custom_Console_Style_Launcher
