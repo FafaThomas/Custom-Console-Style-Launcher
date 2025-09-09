@@ -7,7 +7,9 @@ using System.Windows.Input;
 using System.Diagnostics;
 using System.ComponentModel;
 using System.Threading.Tasks;
-using System.Text.RegularExpressions;
+using System.Windows.Controls;
+using Windows.Gaming.Input;
+using System.Runtime.InteropServices;
 
 namespace Custom_Console_Style_Launcher
 {
@@ -15,8 +17,12 @@ namespace Custom_Console_Style_Launcher
     {
         private ObservableCollection<Game> _games;
         private Game _selectedGame;
+        private Gamepad _gamepad;
 
         public event PropertyChangedEventHandler PropertyChanged;
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
 
         public ObservableCollection<Game> Games
         {
@@ -36,10 +42,8 @@ namespace Custom_Console_Style_Launcher
                 _selectedGame = value;
                 OnPropertyChanged(nameof(SelectedGame));
 
-                // Change video source when selected game changes
                 if (BackgroundVideo != null && _selectedGame != null)
                 {
-                    // Convert relative paths to absolute URIs
                     if (Uri.TryCreate(_selectedGame.VideoPath, UriKind.RelativeOrAbsolute, out Uri videoUri))
                     {
                         BackgroundVideo.Source = videoUri;
@@ -51,10 +55,10 @@ namespace Custom_Console_Style_Launcher
         public MainWindow()
         {
             InitializeComponent();
+            DataContext = this;
             LoadGamesFromJson();
-            this.DataContext = this;
+            InitializeGamepad();
 
-            // Select the first game by default
             if (Games.Count > 0)
             {
                 SelectedGame = Games[0];
@@ -74,13 +78,11 @@ namespace Custom_Console_Style_Launcher
                 }
                 catch (JsonException ex)
                 {
-                    // Handle JSON deserialization errors
                     MessageBox.Show($"Error reading games.json: {ex.Message}");
                     Games = new ObservableCollection<Game>();
                 }
                 catch (IOException ex)
                 {
-                    // Handle file I/O errors
                     MessageBox.Show($"Error accessing games.json: {ex.Message}");
                     Games = new ObservableCollection<Game>();
                 }
@@ -92,47 +94,125 @@ namespace Custom_Console_Style_Launcher
             }
         }
 
-        private void OnPropertyChanged(string propertyName)
+        private void InitializeGamepad()
         {
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+            Gamepad.GamepadAdded += Gamepad_GamepadAdded;
+            Gamepad.GamepadRemoved += Gamepad_GamepadRemoved;
+
+            if (Gamepad.Gamepads.Count > 0)
+            {
+                _gamepad = Gamepad.Gamepads[0];
+                Debug.WriteLine("Gamepad detected and initialized.");
+            }
+
+            Task.Run(() => GamepadPollingLoop());
         }
 
-        private void Window_KeyDown(object sender, KeyEventArgs e)
+        private void Gamepad_GamepadAdded(object sender, Gamepad e)
         {
-            int currentIndex = Games.IndexOf(SelectedGame);
+            _gamepad = e;
+            Debug.WriteLine("Gamepad added.");
+        }
 
-            if (e.Key == Key.Left)
+        private void Gamepad_GamepadRemoved(object sender, Gamepad e)
+        {
+            _gamepad = null;
+            Debug.WriteLine("Gamepad removed.");
+        }
+
+        private async void GamepadPollingLoop()
+        {
+            while (true)
             {
-                if (currentIndex > 0)
+                if (_gamepad != null)
                 {
-                    SelectedGame = Games[currentIndex - 1];
+                    var reading = _gamepad.GetCurrentReading();
+
+                    if (reading.LeftThumbstickX > 0.5)
+                    {
+                        Dispatcher.Invoke(() => NavigateRight());
+                    }
+                    else if (reading.LeftThumbstickX < -0.5)
+                    {
+                        Dispatcher.Invoke(() => NavigateLeft());
+                    }
+                    else if (reading.Buttons.HasFlag(GamepadButtons.A) || reading.Buttons.HasFlag(GamepadButtons.X))
+                    {
+                        Dispatcher.Invoke(() => LaunchGame());
+                    }
                 }
+                await Task.Delay(150);
             }
-            else if (e.Key == Key.Right)
+        }
+
+        private void NavigateLeft()
+        {
+            if (GamesListBox.SelectedIndex > 0)
             {
-                if (currentIndex < Games.Count - 1)
+                GamesListBox.SelectedIndex--;
+                GamesListBox.ScrollIntoView(GamesListBox.SelectedItem);
+            }
+        }
+
+        private void NavigateRight()
+        {
+            if (GamesListBox.SelectedIndex < Games.Count - 1)
+            {
+                GamesListBox.SelectedIndex++;
+                GamesListBox.ScrollIntoView(GamesListBox.SelectedItem);
+            }
+        }
+
+        private void LaunchGame()
+        {
+            ShowLoadingScreenAndLaunch();
+        }
+
+        private async void ShowLoadingScreenAndLaunch()
+        {
+            if (SelectedGame == null || string.IsNullOrEmpty(SelectedGame.ExecutablePath))
+            {
+                return;
+            }
+
+            GamesListBox.Visibility = Visibility.Collapsed;
+            GameInfoStackPanel.Visibility = Visibility.Collapsed;
+            BackgroundVideo.Source = new Uri("Assets/Loading.mp4", UriKind.Relative);
+
+            try
+            {
+                Process gameProcess = Process.Start(new ProcessStartInfo(SelectedGame.ExecutablePath) { UseShellExecute = true });
+
+                if (gameProcess != null)
                 {
-                    SelectedGame = Games[currentIndex + 1];
+                    await Task.Run(() => gameProcess.WaitForInputIdle());
+                    SetForegroundWindow(gameProcess.MainWindowHandle);
                 }
+
+                this.Close();
+            }
+            catch (System.Exception ex)
+            {
+                MessageBox.Show($"Error launching game: {ex.Message}");
+                GamesListBox.Visibility = Visibility.Visible;
+                GameInfoStackPanel.Visibility = Visibility.Visible;
+                BackgroundVideo.Source = new Uri(SelectedGame.VideoPath, UriKind.RelativeOrAbsolute);
+            }
+        }
+
+        public void Window_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Right)
+            {
+                NavigateRight();
+            }
+            else if (e.Key == Key.Left)
+            {
+                NavigateLeft();
             }
             else if (e.Key == Key.Enter)
             {
-                LaunchGame(null, null);
-            }
-        }
-
-        private void LaunchGame(object sender, RoutedEventArgs e)
-        {
-            if (SelectedGame != null && !string.IsNullOrEmpty(SelectedGame.ExecutablePath))
-            {
-                try
-                {
-                    Process.Start(new ProcessStartInfo(SelectedGame.ExecutablePath) { UseShellExecute = true });
-                }
-                catch (System.Exception ex)
-                {
-                    MessageBox.Show($"Error launching game: {ex.Message}");
-                }
+                LaunchGame();
             }
         }
 
@@ -143,9 +223,7 @@ namespace Custom_Console_Style_Launcher
                 if (BackgroundVideo != null && SelectedGame != null)
                 {
                     await Task.Delay(100);
-                    // Force a full reset by setting the source to null
                     BackgroundVideo.Source = null;
-                    // Immediately re-assign the source to force a reload and restart
                     if (Uri.TryCreate(SelectedGame.VideoPath, UriKind.RelativeOrAbsolute, out Uri videoUri))
                     {
                         BackgroundVideo.Source = videoUri;
@@ -165,6 +243,11 @@ namespace Custom_Console_Style_Launcher
             {
                 SelectedGame = selectedItem;
             }
+        }
+
+        protected void OnPropertyChanged(string propertyName)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }
     }
 }
